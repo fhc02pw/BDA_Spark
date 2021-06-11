@@ -2,6 +2,7 @@ package edu.campus02.iwi.spark.lv.recommender.alsmf;
 
 import edu.campus02.iwi.spark.lv.WinConfig;
 import org.apache.spark.SparkConf;
+import org.apache.spark.api.java.function.MapFunction;
 import org.apache.spark.ml.Pipeline;
 import org.apache.spark.ml.PipelineModel;
 import org.apache.spark.ml.PipelineStage;
@@ -38,33 +39,63 @@ public class MovieRecommendation {
 		WinConfig.setupEnv();
 
 		// 1) Spark Context Init
+		SparkConf conf = new SparkConf().setMaster("local[1]").setAppName(MovieRecommendation.class.getName());
+		SparkSession spark = SparkSession.builder().config(conf).getOrCreate();
 
 		
 		// 2) read all ratings data
+		Dataset<MovieRating> ratings= spark.read().text(BASE_PATH_TO_INPUT_RATINGS).as(Encoders.STRING())
+				.map((MapFunction<String, MovieRating>)MovieRating::parseRating,Encoders.bean(MovieRating.class)).cache();
 
 		
 		// 3) read all movie data
+		Dataset<MovieTitle> movies= spark.read().text(BASE_PATH_TO_INPUT_MOVIES).as(Encoders.STRING())
+				.map((MapFunction<String, MovieTitle>)MovieTitle::parseColonsFormat,Encoders.bean(MovieTitle.class)).cache();
 
 		
 		// 4) split ratings data into 90% training, 10% test
+		Dataset<MovieRating>[] split = ratings.randomSplit(new double[] {90, 10});
+		Dataset<MovieRating> training = split[0].cache();
+		Dataset<MovieRating> test = split[1].cache();
 
 		
 		// 5) Build the recommendation model using ALS on the training data
+		ALS als= new ALS().setRank(8)
+				.setMaxIter(10)
+				.setRegParam(0.1)
+				.setUserCol("userId")
+				.setItemCol("movieId")
+				.setRatingCol("rating")
+				.setColdStartStrategy("drop");
+
+		ALSModel model= als.fit(training);
+
 
 		
 		// 10) (skip this till the end) tune the model using the method for 9) see below 
 		// then assign the model to the best based on hyper param tuning
+		model = tuneALSModel(training);
 
 		
 		// 6) make predictions for testData
+		model.setColdStartStrategy("drop");
+		Dataset<Row> predictions= model.transform(test);
 
 
 		// 7) Evaluate the model by computing the RMSE on the test data
+		RegressionEvaluator evaluator= new RegressionEvaluator()
+				.setMetricName("rmse")
+				.setLabelCol("rating")
+				.setPredictionCol("prediction");
+		Double rmse= evaluator.evaluate(predictions);
 
+		System.out.println("Root-mean-square error = "+ rmse);
 		
 		// 8) make personalized recommendations by
 		// getting top n movies for specific userId
-		
+		Integer[] userIds= {456,234,101,23};
+		Dataset<Row> topMovies= getTopNMovieRecommendations(ratings,movies, model, userIds, 10);
+		topMovies.show(false);
 		
 	}
 
